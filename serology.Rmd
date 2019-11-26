@@ -1,0 +1,230 @@
+---
+title: "Incidence and serology"
+csl: the-american-naturalist.csl
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+  pdf_document:
+    toc: yes
+<!-- bibliography: references.bib -->
+editor_options: 
+  chunk_output_type: console
+---
+
+<!--
+IMAGES:
+Insert them with: ![alt text](image.png)
+You can also resize them if needed: convert image.png -resize 50% image.png
+If you want to center the image, go through HTML code:
+<div style="text-align:center"><img src ="image.png"/></div>
+
+REFERENCES:
+For references: Put all the bibTeX references in the file "references.bib"
+in the current folder and cite the references as @key or [@key] in the text.
+Uncomment the bibliography field in the above header and put a "References"
+title wherever you want to display the reference list.
+-->
+
+<style type="text/css">
+.main-container {
+  max-width: 1370px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r general options, include = FALSE}
+knitr::knit_hooks$set(
+  margin = function(before, options, envir) {
+    if (before) par(mgp = c(1.5, .5, 0), bty = "n", plt = c(.105, .97, .13, .97))
+    else NULL
+  },
+  prompt = function(before, options, envir) {
+    options(prompt = if (options$engine %in% c("sh", "bash")) "$ " else "> ")
+  })
+
+knitr::opts_chunk$set(margin = TRUE, prompt = TRUE, comment = "",
+                      collapse = TRUE, cache = FALSE, autodep = TRUE,
+                      dev.args = list(pointsize = 11), fig.height = 3.5,
+                      fig.width = 4.24725, fig.retina = 2, fig.align = "center")
+
+options(width = 137)
+```
+
+```{r}
+library(magrittr)
+```
+
+Reading and reorganizing the data:
+
+```{r}
+sero <- readxl::read_excel("Sero.xlsx", "All data") %>% 
+  dplyr::select(Typo3A, `Centr CAT2`, All, Pop, Tested, `Pos Delta`, Centrality, Shape_Leng, born_in_th) %>% 
+  dplyr::rename(cases            = All,
+                popsize          = Pop,
+                area             = Shape_Leng,
+                centrality       = Centrality,
+                jenks            = `Centr CAT2`,
+                typology         = Typo3A,
+                tested           = Tested,
+                seropositives    = `Pos Delta`,
+                borne_here       = born_in_th) %>% 
+  dplyr::mutate(seronegatives    = tested - seropositives,
+                incidence        = cases / popsize, 
+                jenks            = ordered(jenks, 0:2),
+                typology         = factor(dplyr::recode(typology, `0` = "rural",
+                                                                  `1` = "urban core",
+                                                                  `2` = "first periphery",
+                                                                  `3` = "second periphery",
+                                                                  `4` = "new settlement",
+                                                                  `5` = "old settlement"),
+                                          c("rural", "urban core", "first periphery", "second periphery", "new settlement", "old settlement")),
+                city             = as.character(typology) %in% c("urban core", "first periphery", "second periphery"),
+                centrality       = 1e6 * centrality / area,
+                sqrtincidence    = sqrt(incidence),
+                sqrtcentrality   = sqrt(centrality),
+                seroprevalence   = seropositives / tested,
+                urban_core       = typology == "urban core")
+```
+
+Exploring the continuous independent variables:
+
+```{r}
+hist(sero$incidence, n = 15, col = "grey", xlab = "incidence", ylab = "number of villages", main = NA)
+```
+
+```{r}
+hist(sero$sqrtincidence, n = 15, col = "grey", xlab = "sqrt(incidence)", ylab = "number of villages", main = NA)
+```
+
+```{r}
+hist(sero$centrality, n = 15, col = "grey", xlab = "centrality", ylab = "number of villages", main = NA)
+```
+
+```{r}
+hist(sero$sqrtcentrality, n = 15, col = "grey", xlab = "sqrt(centrality)", ylab = "number of villages", main = NA)
+```
+
+A binomial model with `incidence`, `centrality` and `typology`:
+
+```{r}
+mod0 <- glm(cbind(seropositives, seronegatives) ~ incidence + I(incidence^2) + centrality + I(centrality^2) + typology, binomial, sero)
+```
+
+```{r}
+car::Anova(mod0, test = "LR")
+```
+
+```{r}
+mod1 <- glm(cbind(seropositives, seronegatives) ~ sqrtincidence + I(sqrtincidence^2) + sqrtcentrality + I(sqrtcentrality^2) + typology, binomial, sero)
+```
+
+```{r}
+car::Anova(mod1, test = "LR")
+```
+
+In the city only:
+
+```{r}
+mod2 <- glm(cbind(seropositives, seronegatives) ~ incidence + I(incidence^2) + centrality + I(centrality^2) + typology, binomial, dplyr::filter(sero, city))
+```
+
+```{r}
+car::Anova(mod2, test = "LR")
+```
+
+```{r}
+mod3 <- glm(cbind(seropositives, seronegatives) ~ sqrtincidence + I(sqrtincidence^2) + sqrtcentrality + I(sqrtcentrality^2) + typology, binomial, dplyr::filter(sero, city))
+```
+
+```{r}
+car::Anova(mod3, test = "LR")
+```
+
+```{r}
+mod4 <- glm(cbind(seropositives, seronegatives) ~ typology, binomial, sero)
+```
+
+```{r}
+summary(mod4)
+```
+
+## Incidence
+
+```{r}
+mod5 <- glm(cbind(cases, popsize - cases) ~ typology + centrality + borne_here, binomial, sero)
+```
+
+```{r}
+summary(mod5)
+```
+
+```{r}
+exp(coef(mod5))
+```
+
+
+```{r}
+car::Anova(mod5, test = "LR")
+```
+
+```{r}
+mod6 <- glm(cbind(cases, popsize - cases) ~ typology + centrality + borne_here + seroprevalence, binomial, dplyr::filter(sero, tested > 10))
+```
+
+```{r}
+summary(mod6)
+```
+
+```{r}
+car::Anova(mod6, test = "LR")
+```
+
+```{r}
+mod7 <- glm(cbind(cases, popsize - cases) ~ typology*seroprevalence + centrality + borne_here, binomial, dplyr::filter(sero, tested > 10))
+```
+
+```{r}
+summary(mod7)
+```
+
+```{r}
+car::Anova(mod7, test = "LR")
+```
+
+
+```{r}
+mod7 <- glm(cbind(cases, popsize - cases) ~ urban_core*seroprevalence + centrality + borne_here, binomial, dplyr::filter(sero, tested > 10))
+```
+
+```{r}
+car::Anova(mod7, test = "LR")
+```
+
+```{r}
+serotypes <- readxl::read_excel("serotypes denv.xls", "Sheet1") %>% 
+  dplyr::select(Age, Dengue, Typo) %>% 
+  dplyr::mutate(typology = factor(dplyr::recode(Typo, `0` = "rural",
+                                                      `1` = "urban core",
+                                                      `2` = "first periphery",
+                                                      `3` = "second periphery",
+                                                      `4` = "new settlement",
+                                                      `5` = "old settlement"),
+                                  c("rural", "urban core", "first periphery", "second periphery", "new settlement", "old settlement")),
+                dengue = Dengue > 0) %>% 
+  dplyr::select(dengue, Age, typology)
+```
+
+```{r}
+model <- glm(dengue ~ Age + typology, binomial, serotypes)
+```
+
+```{r}
+car::Anova(model, test = "LR")
+```
+
+```{r}
+summary(model)
+```
+
