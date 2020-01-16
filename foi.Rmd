@@ -167,6 +167,14 @@ sero_age %>%
   plot_seroprev()
 ```
 
+Another one:
+
+```{r}
+sero_age %>%
+  seroprev(c(0, 6, 8, 12, 18, 30, 40, 50, 100)) %>% 
+  plot_seroprev()
+```
+
 ## Inferring the force of infection from a polynomial logistic model
 
 Let's model the force of infection using a binomial model:
