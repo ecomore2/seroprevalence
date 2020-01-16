@@ -1,0 +1,355 @@
+---
+title: "Inferring the force of infection from sero-surveys"
+csl: the-american-naturalist.csl
+output:
+  html_document:
+    theme: cerulean
+    toc: yes
+  pdf_document:
+    toc: yes
+<!-- bibliography: references.bib -->
+editor_options: 
+  chunk_output_type: console
+---
+
+<!--
+IMAGES:
+Insert them with: ![alt text](image.png)
+You can also resize them if needed: convert image.png -resize 50% image.png
+If you want to center the image, go through HTML code:
+<div style="text-align:center"><img src ="image.png"/></div>
+
+REFERENCES:
+For references: Put all the bibTeX references in the file "references.bib"
+in the current folder and cite the references as @key or [@key] in the text.
+Uncomment the bibliography field in the above header and put a "References"
+title wherever you want to display the reference list.
+-->
+
+<style type="text/css">
+.main-container {
+  max-width: 1370px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+```{r general options, include = FALSE}
+knitr::knit_hooks$set(
+  margin = function(before, options, envir) {
+    if (before) par(mgp = c(1.5, .5, 0), bty = "n", plt = c(.105, .97, .13, .97))
+    else NULL
+  },
+  prompt = function(before, options, envir) {
+    options(prompt = if (options$engine %in% c("sh", "bash")) "$ " else "> ")
+  })
+
+# knitr::opts_chunk$set(margin = TRUE, prompt = TRUE, comment = "",
+#                       collapse = TRUE, cache = FALSE, autodep = TRUE,
+#                       dev.args = list(pointsize = 11), fig.height = 3.5,
+#                       fig.width = 4.24725, fig.retina = 2, fig.align = "center",
+#                       message = FALSE, warning = FALSE)
+
+knitr::opts_chunk$set(margin = TRUE, echo = TRUE, cache = FALSE, autodep = TRUE,
+                      dev.args = list(pointsize = 11), fig.height = 3.5,
+                      fig.width = 4.24725, fig.retina = 2, fig.align = "center",
+                      message = FALSE, warning = FALSE)
+
+options(width = 137)
+```
+
+## Packages and general parameters
+
+The needed packages:
+
+```{r}
+library(MASS)
+library(magrittr)
+library(stringr)
+library(tidyr)
+library(purrr)
+library(dplyr) # safer to load it last
+```
+
+Defining some colors for the plots:
+
+```{r}
+blue <- "#377eb8"
+red <- "#e41a1c"
+green <- "#4daf4a"
+pink <- adjustcolor(red, .1)
+lightgreen <- adjustcolor(green, .1)
+```
+
+## Data and explorative visualization
+
+Loading the data:
+
+```{r}
+serosurvey <- "Ecomore2-serosurvey-fileforMC.dta" %>%
+  foreign::read.dta() %>% 
+  as_tibble()
+```
+
+Selecting `Age` and `den_delta` variables:
+
+```{r}
+sero_age <- serosurvey %>% 
+  select(Age, den_delta) %>% 
+  mutate(den_delta = den_delta == "positif")
+```
+
+Calculating seroprevalence with confidence intervals by age classes:
+
+```{r}
+seroprev <- function(data, breaks) {
+  data %>% 
+    mutate(age_cat = cut(Age, breaks, include.lowest = TRUE)) %>% 
+    group_by(age_cat) %>% 
+    summarise(x = sum(den_delta),
+              n = n()) %>% 
+    mutate(prop = map2(x, n, prop.test), 
+           estm = map_dbl(prop, function(x) x$estimate),
+           conf = map(prop, function(x) x$conf),
+           lwer = map_dbl(conf, first),
+           uppr = map_dbl(conf, last)) %>% 
+    select(-prop, -conf) %>% 
+    mutate(age_cat = as.character(age_cat) %>%
+                       str_remove("\\[") %>%
+                       str_remove("\\(") %>%
+                       str_remove("\\]")) %>% 
+    separate(age_cat, c("min", "max"), ",") %>% 
+    mutate_at(vars(min, max), as.numeric) %>% 
+    mutate(middle = select(., min, max) %>%
+                      apply(1, mean))
+}
+```
+
+Let's try it with as equal as possible numbers of data points per age category:
+
+```{r}
+seroprev(sero_age, quantile(sero_age$Age, seq(0, 1, le = 9)))
+```
+
+A function that plots the seroprevalence estimates:
+
+```{r}
+plot_seroprev <- function(estimates, xlim = c(0, 90), ylim = 0:1, col = blue) {
+  with(estimates, {
+    plot(middle, estm, xlab = "age (years)", ylab = "seroprevalence",
+         xlim = xlim, ylim = ylim, col = col)
+    arrows(middle, lwer, middle, uppr, .05, 90, 3, col)
+  })
+}
+```
+
+Let's plot these estimates:
+
+```{r}
+sero_age %>%
+  seroprev(quantile(sero_age$Age, seq(0, 1, le = 9))) %>% 
+  plot_seroprev()
+```
+
+Same thing with twice as many age classes:
+
+```{r}
+sero_age %>%
+  seroprev(quantile(sero_age$Age, seq(0, 1, le = 17))) %>% 
+  plot_seroprev()
+```
+
+Or with predefined age classes:
+
+```{r}
+sero_age %>%
+  seroprev(seq(0, 90, 5)) %>% 
+  plot_seroprev()
+```
+
+## Inferring the force of infection from a polynomial logistic model
+
+Let's model the force of infection using a binomial model:
+
+```{r}
+full_model <- glm(den_delta ~ Age + I(Age^2) + I(Age^3) + I(Age^4) + I(Age^5) + I(Age^6) +
+                    I(Age^7) + I(Age^8) + I(Age^9) + I(Age^10) + I(Age^11) + I(Age^12) + I(Age^13) +
+                    I(Age^14) + I(Age^15) + I(Age^16) + I(Age^17), binomial, sero_age)
+```
+
+Sequential likelihood ratio tests:
+
+```{r}
+anova(full_model, test = "LRT")
+```
+
+Let's see whether the model with degree 5 is better than the model with degree 2:
+
+```{r}
+mod2 <- glm(den_delta ~ Age + I(Age^2), binomial, sero_age)
+mod5 <- update(mod2, . ~ . + I(Age^3) + I(Age^4) + I(Age^5))
+anova(mod2, mod5, test = "LRT")
+```
+
+`mod5` seems the best. The following function computes the predictions with 
+confidence interval:
+
+```{r}
+predict2 <- function(x, newdata, ci = .95) {
+  ci <- (1 - ci) / 2
+  linkinv <- family(x)$linkinv
+  predict(x, newdata, se.fit = TRUE) %>% 
+    data.frame() %>% 
+    mutate(lower = linkinv(fit + qt(ci, Inf) * se.fit),
+           upper = linkinv(fit + qt(1 - ci, Inf) * se.fit),
+           fit   = linkinv(fit)) %>% 
+    select(-residual.scale, -se.fit)
+}
+```
+
+Let's see what it looks like compared to the age classes estimates:
+
+```{r}
+sero_age %>%
+  seroprev(quantile(sero_age$Age, seq(0, 1, le = 9))) %>% 
+  plot_seroprev()
+age_val <- seq(0, 90, le = 512)
+mod5 %>%
+  predict2(data.frame(Age = age_val)) %>% 
+  with({
+    polygon(c(age_val, rev(age_val)), c(lower, rev(upper)), col = pink, border = NA)
+    lines(age_val, fit, col = red)})
+legend("topleft", legend = c("data", "modeled seroprevalence"),
+       bty = "n", col = c(blue, red), pch = c(1, NA), lty = c(NA, 1))
+```
+
+Note that the polynomial logistic model performs poorly at edges, especially
+when there is too few data (right edge here). The following functions derives
+the force of infection from the logistic regression coefficients' estimates
+following the following equation:
+
+$$
+\lambda(a) = \eta'(a)\frac{e^{\eta(a)}}{1 + e^{\eta(a)}}
+$$
+where $a$ is age, $\lambda$ is the force of infection, $\eta$ is the linear
+predictor of the logistic model and $\eta'$ is the first derivative of this
+linear predictor, respective to $a$:
+
+```{r}
+foi <- function(Age, coef) {
+  f <- function(x) x[x >= 0]
+  degree <- seq_along(coef) - 1
+  eta <- degree %>% 
+    map(~ Age^.x) %>% 
+    map2(coef, multiply_by) %>% 
+    as.data.frame() %>% 
+    rowSums()
+  eta_prime <- f(degree - 1) %>% 
+    map(~ Age^.x) %>% 
+    map2(coef[-1], multiply_by) %>% 
+    as.data.frame() %>% 
+    rowSums()
+  eta_prime * exp(eta) / (1 + exp(eta))
+}
+```
+
+Let's try it:
+
+```{r}
+foi_est <- foi(age_val, coef(mod5))
+```
+
+Let's compute the confidence interval (takes about 20''):
+
+```{r cache = TRUE}
+foi_ci <- mvrnorm(1e4, coef(mod5), vcov(mod5)) %>% 
+  t() %>%
+  as.data.frame() %>% 
+  map(foi, Age = age_val) %>% 
+  as.data.frame() %>% 
+  apply(1, quantile, c(.025, .975)) %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  setNames(c("lower", "upper"))
+```
+
+Let's plot it:
+
+```{r}
+plot(age_val, foi(age_val, coef(mod5)), ylim = c(0, .12), type = "n",
+     xlab = "age (years)", ylab = "force of infection (/person/year)")
+with(foi_ci, polygon(c(age_val, rev(age_val)), c(lower, rev(upper)), border = NA, col = lightgreen))
+lines(age_val, foi_est, col = green)
+```
+
+The force of infection is the rate at which susceptible individuals aquired an
+infection. This figure thus suggests that children under 10 are less exposed
+than adults. The following function plot the data, the modeled seroprevalence
+and the modeled force of infection on the same figure:
+
+```{r}
+plot_prev_foi <- function(mod) {
+  opar <- par(plt = c(.105, .895, .13, .97))
+  sero_age %>%
+    seroprev(quantile(sero_age$Age, seq(0, 1, le = 9))) %>% 
+    plot_seroprev()
+  mod %>%
+    predict2(data.frame(Age = age_val)) %>% 
+    with({
+      polygon(c(age_val, rev(age_val)), c(lower, rev(upper)), col = pink, border = NA)
+      lines(age_val, fit, col = red)})
+  legend("topleft", legend = c("data", "modeled seroprevalence", "modeled force of infection"),
+         bty = "n", col = c(blue, red, green), pch = c(1, NA, NA), lty = c(NA, 1, 1))
+  par(plt = c(.105, .895, .13, .45), new = TRUE)
+  plot(age_val, foi(age_val, coef(mod)), ylim = c(0, .12), type = "n", axes = FALSE, ann = FALSE)
+  with(foi_ci, polygon(c(age_val, rev(age_val)), c(lower, rev(upper)), border = NA, col = lightgreen))
+  lines(age_val, foi_est, col = green)
+  axis(4)
+  mtext("foi (/person/year)", 4, 1.5)
+  par(opar)
+}
+```
+
+Let's try it:
+
+```{r}
+plot_prev_foi(mod5)
+```
+
+### Forcing a 0 intercept
+
+Let's do the same, this time forcing an intercept equal to zero:
+
+```{r}
+full_model <- update(full_model, . ~ . -1) 
+```
+
+Let's look at the sequential likelihood ratio tests:
+
+```{r}
+anova(full_model, test = "LRT")
+```
+
+Best candidate models:
+
+```{r}
+mod12 <- update(full_model, . ~ . -I(Age^13) - I(Age^14) - I(Age^15) - I(Age^16) - I(Age^17))
+mod10 <- update(mod12, . ~ . -I(Age^11) - I(Age^12))
+mod8 <- update(mod10, . ~ . -I(Age^9) - I(Age^10))
+```
+
+Let's compare `mod10` and `mod12` to `mod8`:
+
+```{r}
+anova(mod8, mod10, test = "LRT")
+anova(mod8, mod12, test = "LRT")
+```
+
+Best model seems to be `mod8`. Let's plot it:
+
+```{r}
+plot_prev_foi(mod8)
+```
+
+Similar conclusion to `mod5` above. Note again the poor performance at the edges
+of the data range.
